@@ -24,11 +24,19 @@ const ViewingScreen = ({ navigation, route }) => {
   const [showQRModal, setShowQRModal] = useState(false);
   const [qrData, setQrData] = useState(null);
   const [thesisData, setThesisData] = useState(thesis);
+  const [accessStatus, setAccessStatus] = useState('none'); // none, pending, approved, expired, denied
+const [requestData, setRequestData] = useState(null);
 
   useEffect(() => {
     loadUserData();
     console.log('Received thesis data:', thesis); // Debug log
   }, [thesis]);
+
+  useEffect(() => {
+  if (currentUser) {
+    checkAccessStatus();
+  }
+}, [currentUser]);
 
   const loadUserData = async () => {
     try {
@@ -43,43 +51,83 @@ const ViewingScreen = ({ navigation, route }) => {
     }
   };
 
-  const handleRequestAccess = async () => {
-    if (!currentUser) {
-      Alert.alert('Error', 'Please log in to request access.');
-      return;
-    }
+  const checkAccessStatus = async () => {
+  if (!currentUser) return;
 
-    // Get the correct thesis ID (handle different property names)
-    const thesisId = thesisData.thesis_id || thesisData.id;
+  try {
+    const thesisId = thesis.thesis_id || thesis.id;
+    const userBorrowingStatus = await thesisService.getUserBorrowingStatus(currentUser.id, thesisId);
     
-    if (!thesisId) {
-      Alert.alert('Error', 'Thesis ID not found.');
-      return;
+    setRequestData(userBorrowingStatus);
+    
+    if (userBorrowingStatus.status === 'approved' && !userBorrowingStatus.isExpired) {
+      setAccessStatus('approved');
+    } else if (userBorrowingStatus.status === 'approved' && userBorrowingStatus.isExpired) {
+      setAccessStatus('expired');
+    } else if (userBorrowingStatus.status === 'pending') {
+      setAccessStatus('pending');
+    } else if (userBorrowingStatus.status === 'denied') {
+      setAccessStatus('denied');
+    } else {
+      setAccessStatus('none');
     }
+  } catch (error) {
+    console.error('Error checking access status:', error);
+    setAccessStatus('none');
+  }
+};
 
-    setLoading(true);
-    try {
-      await thesisService.requestAccess(currentUser.id, thesisId);
-      Alert.alert(
-        'Request Submitted', 
-        'Your request for access has been submitted to the administrator. You will be notified when it is approved.',
-        [{ 
-          text: 'OK'
-        }]
-      );
-    } catch (error) {
-      console.error('Error requesting access:', error);
-      
-      let errorMessage = 'Failed to submit request. Please try again.';
-      if (error.message.includes('already have a pending request')) {
-        errorMessage = 'You already have a pending request for this thesis.';
-      }
-      
-      Alert.alert('Request Failed', errorMessage);
-    } finally {
-      setLoading(false);
+// Update handleRequestAccess in ViewingScreen.js
+const [isNavigating, setIsNavigating] = useState(false);
+
+const handleRequestAccess = async () => {
+  if (!currentUser) {
+    Alert.alert('Error', 'Please log in to request access.');
+    return;
+  }
+
+  // Prevent multiple simultaneous requests
+  if (isNavigating) return;
+
+  const thesisId = thesisData.thesis_id || thesisData.id;
+  
+  if (!thesisId) {
+    Alert.alert('Error', 'Thesis ID not found.');
+    return;
+  }
+
+  setIsNavigating(true);
+  setLoading(true);
+  
+  try {
+    await thesisService.requestAccess(currentUser.id, thesisId);
+    Alert.alert(
+      'Request Submitted', 
+      'Your request for access has been submitted to the administrator. You will be notified when it is approved.',
+      [{ 
+        text: 'OK',
+        onPress: () => {
+          // Update status after request
+          setAccessStatus('pending');
+          checkAccessStatus();
+        }
+      }]
+    );
+  } catch (error) {
+    console.error('Error requesting access:', error);
+    
+    let errorMessage = 'Failed to submit request. Please try again.';
+    if (error.message.includes('already have a pending request')) {
+      errorMessage = 'You already have a pending request for this thesis.';
+      setAccessStatus('pending');
     }
-  };
+    
+    Alert.alert('Request Failed', errorMessage);
+  } finally {
+    setLoading(false);
+    setIsNavigating(false);
+  }
+};
 
   const handleBorrow = async () => {
   if (!currentUser) {
@@ -192,36 +240,77 @@ const ViewingScreen = ({ navigation, route }) => {
 
           {/* Action Buttons */}
           <View style={styles.buttonsContainer}>
-            <TouchableOpacity 
-              style={[styles.requestButton, loading && styles.buttonDisabled]}
-              onPress={handleRequestAccess}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Icon name="lock-open" size={20} color="#FFFFFF" />
-              )}
-              <Text style={styles.requestButtonText}>
-                {loading ? 'Requesting...' : 'Request Access'}
-              </Text>
-            </TouchableOpacity>
+  {accessStatus === 'approved' ? (
+    // In the buttons section where you navigate to full view
+    <TouchableOpacity 
+      style={styles.viewButton}
+      onPress={() => navigation.navigate('FullViewThesisScreen', { thesis: thesisData })}
+    >
+      <Icon name="file-document" size={20} color="#FFFFFF" />
+      <Text style={styles.viewButtonText}>View Full Thesis</Text>
+    </TouchableOpacity>
+  ) : accessStatus === 'pending' ? (
+    <TouchableOpacity 
+      style={[styles.requestButton, styles.buttonDisabled]}
+      disabled={true}
+    >
+      <Icon name="clock" size={20} color="#FFFFFF" />
+      <Text style={styles.requestButtonText}>Request Pending</Text>
+    </TouchableOpacity>
+  ) : (
+    <TouchableOpacity 
+      style={[styles.requestButton, loading && styles.buttonDisabled]}
+      onPress={handleRequestAccess}
+      disabled={loading}
+    >
+      {loading ? (
+        <ActivityIndicator color="#FFFFFF" size="small" />
+      ) : (
+        <Icon name="lock-open" size={20} color="#FFFFFF" />
+      )}
+      <Text style={styles.requestButtonText}>
+        {loading ? 'Requesting...' : 'Request Access'}
+      </Text>
+    </TouchableOpacity>
+  )}
 
-            <TouchableOpacity 
-              style={[styles.borrowButton, loading && styles.buttonDisabled]}
-              onPress={handleBorrow}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Icon name="bookshelf" size={20} color="#FFFFFF" />
-              )}
-              <Text style={styles.borrowButtonText}>
-                {loading ? 'Generating...' : 'Borrow from Smart Bookshelf'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+  {/* Borrow Button - Only enabled when approved */}
+  <TouchableOpacity 
+    style={[
+      styles.borrowButton, 
+      (accessStatus !== 'approved' || loading) && styles.buttonDisabled
+    ]}
+    onPress={handleBorrow}
+    disabled={accessStatus !== 'approved' || loading}
+  >
+    {loading ? (
+      <ActivityIndicator color="#FFFFFF" size="small" />
+    ) : (
+      <Icon name="bookshelf" size={20} color="#FFFFFF" />
+    )}
+    <Text style={styles.borrowButtonText}>
+      {loading ? 'Generating...' : 'Borrow from Smart Bookshelf'}
+    </Text>
+  </TouchableOpacity>
+
+  {/* Request Status Info */}
+  {requestData && (accessStatus === 'pending' || accessStatus === 'approved' || accessStatus === 'denied') && (
+    <View style={styles.requestInfo}>
+      <Text style={styles.requestInfoTitle}>Request Details:</Text>
+      <Text style={styles.requestInfoText}>
+        Submitted: {new Date(requestData.request_date).toLocaleDateString()}
+      </Text>
+      <Text style={styles.requestInfoText}>
+        Status: {requestData.status.toUpperCase()}
+      </Text>
+      {accessStatus === 'approved' && requestData.expiryDate && (
+        <Text style={styles.requestInfoText}>
+          Expires: {new Date(requestData.expiryDate).toLocaleDateString()}
+        </Text>
+      )}
+    </View>
+  )}
+</View>
         </View>
       </ScrollView>
 
@@ -484,7 +573,39 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
-  },
+  },// Add to styles in both screens
+viewButton: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'center',
+  backgroundColor: '#28a745',
+  paddingVertical: 15,
+  borderRadius: 8,
+  marginBottom: 15,
+},
+viewButtonText: {
+  color: '#fff',
+  fontSize: 16,
+  fontWeight: 'bold',
+  marginLeft: 8,
+},
+requestInfo: {
+  backgroundColor: '#e9ecef',
+  padding: 15,
+  borderRadius: 8,
+  marginTop: 15,
+},
+requestInfoTitle: {
+  fontSize: 14,
+  fontWeight: 'bold',
+  color: '#495057',
+  marginBottom: 8,
+},
+requestInfoText: {
+  fontSize: 12,
+  color: '#6c757d',
+  marginBottom: 4,
+},
 });
 
 export default ViewingScreen;

@@ -25,6 +25,7 @@ const QRScannerScreen = ({ navigation }) => {
   const isFocused = useIsFocused();
   const cameraRef = useRef(null);
   const scanTimeoutRef = useRef(null);
+  const isProcessingRef = useRef(false); // Additional ref to prevent concurrent processing
 
   useEffect(() => {
     loadUserData();
@@ -42,6 +43,7 @@ const QRScannerScreen = ({ navigation }) => {
     if (isFocused) {
       setScanned(false);
       setLoading(false);
+      isProcessingRef.current = false;
     }
   }, [isFocused]);
 
@@ -56,10 +58,16 @@ const QRScannerScreen = ({ navigation }) => {
     }
   };
 
-  const handleBarCodeScanned = async ({ data }) => {
-    if (scanned || !currentUser) return;
+  const handleBarCodeScanned = useCallback(async ({ data }) => {
+    // Prevent multiple scans - check both state and ref
+    if (scanned || !currentUser || isProcessingRef.current) {
+      console.log('Scan prevented - already processing or scanned');
+      return;
+    }
 
+    // Immediately set flags to prevent additional scans
     setScanned(true);
+    isProcessingRef.current = true;
     setLoading(true);
 
     try {
@@ -101,60 +109,58 @@ const QRScannerScreen = ({ navigation }) => {
         console.log('Thesis found:', thesis.title);
         // Record the scan in history
         await thesisService.recordScan(currentUser.id, scanIdentifier, scanType);
+        
+        // Navigate to ViewingScreen and prevent further scans
         navigation.navigate('Viewing', { thesis });
+        
+        // Reset scan state after navigation with delay
+        scanTimeoutRef.current = setTimeout(() => {
+          setScanned(false);
+          setLoading(false);
+          isProcessingRef.current = false;
+        }, 2000);
       } else {
-        Alert.alert(
-          'Thesis Not Found', 
-          'No thesis found for this QR code. Please make sure the thesis is properly registered in the system.'
-        );
-        setScanned(false);
+        throw new Error('No thesis found for this QR code');
       }
 
     } catch (error) {
       console.error('Error processing QR code:', error);
       
-      if (error.message.includes('No thesis found for this file URL')) {
-        Alert.alert(
-          'Thesis Not Found',
-          'This PDF file is not linked to any thesis in our system. Please contact the administrator.',
-          [{ text: 'OK', onPress: () => setScanned(false) }]
-        );
-      } else if (error.message.includes('Thesis not found')) {
-        Alert.alert(
-          'Thesis Not Found',
-          'No thesis found for this QR code. The thesis may have been removed or the QR code is invalid.',
-          [{ text: 'OK', onPress: () => setScanned(false) }]
-        );
-      } else {
-        Alert.alert(
-          'Scan Error', 
-          error.message || 'Could not process the QR code. Please try again.',
-          [{ text: 'OK', onPress: () => setScanned(false) }]
-        );
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
+      let errorTitle = 'Scan Error';
+      let errorMessage = 'Could not process the QR code. Please try again.';
+      let resetDelay = 2000;
 
-  const showErrorAndReset = (title, message) => {
-    Alert.alert(title, message, [
-      {
-        text: 'OK',
-        onPress: () => {
-          // Reset scan after a brief delay to prevent immediate re-scan
-          scanTimeoutRef.current = setTimeout(() => {
-            setScanned(false);
-            setLoading(false);
-          }, 1500);
-        }
+      if (error.message.includes('No thesis found for this file URL')) {
+        errorTitle = 'Thesis Not Found';
+        errorMessage = 'This PDF file is not linked to any thesis in our system. Please contact the administrator.';
+      } else if (error.message.includes('Thesis not found') || error.message.includes('No thesis found for this QR code')) {
+        errorTitle = 'Thesis Not Found';
+        errorMessage = 'No thesis found for this QR code. The thesis may have been removed or the QR code is invalid.';
+      } else if (error.message.includes('Not a thesis QR code')) {
+        errorTitle = 'Invalid QR Code';
+        errorMessage = 'This QR code is not a valid thesis QR code. Please scan a thesis QR code.';
       }
-    ]);
-  };
+
+      Alert.alert(errorTitle, errorMessage, [
+        {
+          text: 'OK',
+          onPress: () => {
+            // Reset scan after a delay to prevent immediate re-scan
+            scanTimeoutRef.current = setTimeout(() => {
+              setScanned(false);
+              setLoading(false);
+              isProcessingRef.current = false;
+            }, resetDelay);
+          }
+        }
+      ]);
+    }
+  }, [scanned, currentUser, navigation]);
 
   const handleRescan = () => {
     setScanned(false);
     setLoading(false);
+    isProcessingRef.current = false;
   };
 
   // Permission states

@@ -63,7 +63,7 @@ export const thesisService = {
     }
   },
 
-  // Record scan history
+  // In thesisService.js - Update the recordScan function
   async recordScan(userId, identifier, type = 'thesis_id') {
     try {
       // For file URLs, we need to get the thesis_id first
@@ -74,17 +74,46 @@ export const thesisService = {
         thesisId = thesis.thesis_id;
       }
 
-      const { error } = await supabase
+      // Check if this user has already scanned this thesis
+      const { data: existingScan, error: checkError } = await supabase
         .from('scanned_theses')
-        .insert([
-          {
-            user_id: userId,
-            thesis_id: thesisId,
-            scanned_at: new Date().toISOString()
-          }
-        ]);
+        .select('id, scanned_at')
+        .eq('user_id', userId)
+        .eq('thesis_id', thesisId)
+        .single();
 
-      if (error) throw error;
+      if (checkError && checkError.code !== 'PGRST116') {
+        // PGRST116 is "not found" which is fine, other errors we should handle
+        console.error('Error checking existing scan:', checkError);
+      }
+
+      if (existingScan) {
+        // Update the existing scan timestamp instead of creating a new one
+        const { error: updateError } = await supabase
+          .from('scanned_theses')
+          .update({
+            scanned_at: new Date().toISOString()
+          })
+          .eq('id', existingScan.id);
+
+        if (updateError) throw updateError;
+        console.log('Updated existing scan timestamp for thesis:', thesisId);
+      } else {
+        // Create new scan record
+        const { error: insertError } = await supabase
+          .from('scanned_theses')
+          .insert([
+            {
+              user_id: userId,
+              thesis_id: thesisId,
+              scanned_at: new Date().toISOString()
+            }
+          ]);
+
+        if (insertError) throw insertError;
+        console.log('Created new scan record for thesis:', thesisId);
+      }
+
       return { success: true };
     } catch (error) {
       console.error('Error recording scan:', error);
@@ -328,7 +357,7 @@ export const thesisService = {
       throw error;
     }
   },
-  // Get recent scanned theses
+  
   async getRecentScannedTheses(userId) {
     try {
       const { data, error } = await supabase
@@ -351,10 +380,198 @@ export const thesisService = {
         .limit(10);
 
       if (error) throw error;
-      return data || [];
+      
+      // Remove duplicates by thesis_id, keeping only the most recent scan
+      const uniqueTheses = [];
+      const seenThesisIds = new Set();
+      
+      for (const item of data || []) {
+        const thesisId = item.thesestwo.thesis_id;
+        if (!seenThesisIds.has(thesisId)) {
+          seenThesisIds.add(thesisId);
+          uniqueTheses.push(item);
+        }
+      }
+      
+      return uniqueTheses;
     } catch (error) {
       console.error('Error fetching recent theses:', error);
       return [];
     }
   },
+
+
+  async getUserBorrowingStatus(userId, thesisId) {
+    try {
+      console.log('getUserBorrowingStatus called with:', { userId, thesisId });
+      
+      const { data, error } = await supabase
+        .from('borrowing_requests')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('thesis_id', thesisId)
+        .order('request_date', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error) {
+        console.log('Supabase error in getUserBorrowingStatus:', error);
+        if (error.code === 'PGRST116') {
+          console.log('No borrowing request found');
+          return { status: 'none', hasAccess: false };
+        }
+        throw error;
+      }
+
+      if (!data) {
+        console.log('No data returned from borrowing_requests');
+        return { status: 'none', hasAccess: false };
+      }
+
+      console.log('Found borrowing request:', data);
+      const now = new Date();
+      const approvedDate = new Date(data.approved_date);
+      const expiryDate = new Date(approvedDate.getTime() + (data.duration_days * 24 * 60 * 60 * 1000));
+      
+      const isExpired = data.status === 'approved' && now > expiryDate;
+      const hasAccess = data.status === 'approved' && !isExpired;
+
+      console.log('Access calculation:', {
+        status: data.status,
+        isExpired,
+        hasAccess,
+        expiryDate: expiryDate.toISOString()
+      });
+
+      return {
+        ...data,
+        hasAccess,
+        isExpired,
+        expiryDate: expiryDate.toISOString()
+      };
+    } catch (error) {
+      console.error('Error in getUserBorrowingStatus:', error);
+      throw error;
+    }
+  },
+
+// In thesisService.js - Update the getSecurePdfUrl function
+  async getSecurePdfUrl(fileUrl) {
+    try {
+      console.log('Original file_url from database:', fileUrl);
+      
+      // If fileUrl is already a full Supabase Storage URL, extract just the path
+      let filePath = fileUrl;
+      
+      // Check if it's a full Supabase Storage URL
+      if (fileUrl.includes('/storage/v1/object/public/')) {
+        // Extract the path after the bucket name
+        const urlParts = fileUrl.split('/storage/v1/object/public/');
+        if (urlParts.length > 1) {
+          filePath = urlParts[1];
+          console.log('Extracted file path from full URL:', filePath);
+        }
+      } else if (fileUrl.includes('/object/public/')) {
+        // Alternative pattern for Supabase URLs
+        const urlParts = fileUrl.split('/object/public/');
+        if (urlParts.length > 1) {
+          filePath = urlParts[1];
+          console.log('Extracted file path from alternative URL:', filePath);
+        }
+      }
+      
+      // If it's still a full URL, try to extract just the filename
+      if (filePath.includes('/') && !filePath.startsWith('thesis-pdfs/')) {
+        const pathParts = filePath.split('/');
+        const fileName = pathParts[pathParts.length - 1];
+        filePath = `thesis-pdfs/${fileName}`;
+        console.log('Extracted filename and created path:', filePath);
+      }
+      
+      // Ensure the path starts with the correct folder
+      if (!filePath.startsWith('thesis-pdfs/')) {
+        filePath = `thesis-pdfs/${filePath}`;
+        console.log('Added thesis-pdfs/ prefix:', filePath);
+      }
+
+      console.log('Final file path for signed URL:', filePath);
+      
+      // Create signed URL that expires in 1 hour
+      const { data, error } = await supabase.storage
+        .from('thesis_files') // Make sure this matches your bucket name exactly
+        .createSignedUrl(filePath, 60 * 60); // 1 hour expiry
+
+      if (error) {
+        console.error('Supabase storage error:', error);
+        throw new Error(`Storage error: ${error.message}`);
+      }
+      
+      if (!data || !data.signedUrl) {
+        throw new Error('No signed URL returned from Supabase');
+      }
+      
+      console.log('Generated signed URL successfully');
+      return data.signedUrl;
+    } catch (error) {
+      console.error('Error generating secure PDF URL:', error);
+      throw error;
+    }
+  },
+
+  // Add this to thesisService.js for debugging
+  async debugStorageContents() {
+    try {
+      console.log('Debugging storage contents...');
+      
+      // List all files in the thesis_files bucket
+      const { data, error } = await supabase.storage
+        .from('thesis_files')
+        .list('thesis-pdfs', {
+          limit: 100,
+          offset: 0,
+        });
+      
+      if (error) {
+        console.error('Error listing storage:', error);
+        return;
+      }
+      
+      console.log('Files in storage:', data);
+      
+      // Also try to list the root to see bucket structure
+      const { data: rootData, error: rootError } = await supabase.storage
+        .from('thesis_files')
+        .list('', {
+          limit: 100,
+          offset: 0,
+        });
+      
+      if (!rootError && rootData) {
+        console.log('Root folder contents:', rootData);
+      }
+      
+    } catch (error) {
+      console.error('Debug error:', error);
+    }
+  },
+
+  async recordThesisView(userId, thesisId) {
+    try {
+      const { error } = await supabase
+        .from('thesis_views')
+        .insert({
+          user_id: userId,
+          thesis_id: thesisId,
+          viewed_at: new Date().toISOString()
+        });
+
+      if (error) throw error;
+      return { success: true };
+    } catch (error) {
+      console.error('Error recording thesis view:', error);
+      // Don't throw as this is not critical
+    }
+  }
+
+
 };

@@ -10,6 +10,7 @@ import ViewingScreen from './screens/ViewingScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import AccountSettingsScreen from './screens/AccountSettingsScreen';
 import { ActivityIndicator, View } from 'react-native';
+import FullViewThesisScreen from './screens/FullViewThesisScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -81,7 +82,7 @@ const App = () => {
               name="Viewing" 
               component={ViewingScreen}
               options={{ 
-                headerShown: true,
+                headerShown: false,
                 title: 'Thesis Details'
               }}
             />
@@ -101,6 +102,12 @@ const App = () => {
                 />
               )}
             </Stack.Screen>
+
+            <Stack.Screen 
+              name="FullViewThesisScreen" 
+              component={FullViewThesisScreen}
+              options={{ headerShown: false }}
+            />
           </>
         ) : (
           // Authentication screens
